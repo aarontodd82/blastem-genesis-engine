@@ -73,12 +73,19 @@ jobs:
       - name: Build
         run: make
 
+      - name: Copy DLLs
+        run: |
+          cp /mingw64/bin/SDL2.dll .
+          cp /mingw64/bin/glew32.dll .
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: blastem-windows
           path: |
             blastem.exe
+            SDL2.dll
+            glew32.dll
             default.cfg
             rom.db
             shaders/
