@@ -37,7 +37,7 @@ void psg_write(psg_context * context, uint8_t value)
 	if (context->vgm) {
 		vgm_sn76489_write(context->vgm, context->cycles, value);
 	}
-	serial_bridge_psg_write(value);
+	serial_bridge_psg_write(value, context->cycles);
 	event_log(EVENT_PSG_REG, context->cycles, sizeof(value), &value);
 	if (value & 0x80) {
 		context->latch = value & 0x70;

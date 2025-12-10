@@ -2,15 +2,18 @@
  * serial_bridge.c - Real-time audio streaming to Genesis Engine hardware
  *
  * This module streams YM2612 and PSG register writes over serial to real
- * Genesis audio hardware. The emulator handles all timing - we just send
- * register writes as they occur.
+ * Genesis audio hardware with precise delta timing.
  *
- * Protocol (matches EmulatorBridge Arduino sketch):
- *   0x50 dd       - Write dd to PSG
- *   0x52 aa dd    - Write dd to YM2612 Port 0, register aa
- *   0x53 aa dd    - Write dd to YM2612 Port 1, register aa
- *   0x00          - PING (device responds with ACK + board type + READY)
- *   0x66          - End/reset (silence chips)
+ * Protocol with delta timing (matches EmulatorBridge Arduino sketch):
+ *   0x00              - PING (single byte, for handshake before streaming)
+ *
+ *   Once connected, all commands have format: [delta_hi] [delta_lo] [cmd] [data...]
+ *   Delta is microseconds to wait BEFORE executing the command.
+ *
+ *   [delta] 0x50 dd       - Write dd to PSG
+ *   [delta] 0x52 aa dd    - Write dd to YM2612 Port 0, register aa
+ *   [delta] 0x53 aa dd    - Write dd to YM2612 Port 1, register aa
+ *   [delta] 0x66          - End/reset (silence chips)
  */
 
 #include <stdio.h>
@@ -342,6 +345,80 @@ int serial_bridge_list_ports(char ports[][64], int max_ports) {
 #endif  // Platform-specific code
 
 // =============================================================================
+// VGM-Style Timing (exact same approach as vgm.c)
+// =============================================================================
+
+// Default to NTSC Genesis master clock (can be set via serial_bridge_init)
+#define DEFAULT_MASTER_CLOCK 53693175
+
+// VGM wait commands - same as vgm.h
+#define CMD_WAIT        0x61    // 0x61 nn nn - wait N samples (16-bit little-endian)
+#define CMD_WAIT_60     0x62    // Wait 735 samples (1/60 sec at 44100 Hz)
+#define CMD_WAIT_50     0x63    // Wait 882 samples (1/50 sec at 44100 Hz)
+#define CMD_WAIT_SHORT  0x70    // 0x70-0x7F - wait 1-16 samples
+
+static uint32_t master_clock = DEFAULT_MASTER_CLOCK;
+static uint32_t last_cycle = 0;
+
+// Forward declaration
+static void buffer_add(const uint8_t *data, int len);
+
+// Output wait commands to buffer (adapted from vgm.c wait_commands)
+static void output_wait_commands(uint32_t samples) {
+    if (!samples) {
+        return;
+    }
+    if (samples <= 0x10) {
+        // Short wait: 0x70 = 1 sample, 0x7F = 16 samples
+        uint8_t cmd = CMD_WAIT_SHORT + (samples - 1);
+        buffer_add(&cmd, 1);
+    } else if (samples >= 735 && samples <= (735 + 0x10)) {
+        // 1/60 sec + optional short wait
+        uint8_t cmd = CMD_WAIT_60;
+        buffer_add(&cmd, 1);
+        output_wait_commands(samples - 735);
+    } else if (samples >= 882 && samples <= (882 + 0x10)) {
+        // 1/50 sec + optional short wait
+        uint8_t cmd = CMD_WAIT_50;
+        buffer_add(&cmd, 1);
+        output_wait_commands(samples - 882);
+    } else if (samples > 0xFFFF) {
+        // Max wait + recurse for remainder
+        uint8_t cmd[3] = {CMD_WAIT, 0xFF, 0xFF};
+        buffer_add(cmd, 3);
+        output_wait_commands(samples - 0xFFFF);
+    } else {
+        // General wait: 16-bit little-endian sample count
+        uint8_t cmd[3] = {CMD_WAIT, samples & 0xFF, (samples >> 8) & 0xFF};
+        buffer_add(cmd, 3);
+    }
+}
+
+// Add wait commands based on cycle difference (adapted from vgm.c add_wait)
+static void add_wait(uint32_t cycle) {
+    // First write - initialize, no wait needed
+    if (last_cycle == 0) {
+        last_cycle = cycle;
+        return;
+    }
+
+    // Handle cycle < last (can happen due to PSG/YM timing granularity)
+    if (cycle < last_cycle) {
+        return;
+    }
+
+    // Convert cycles to samples at 44100 Hz (same math as vgm.c)
+    uint64_t last_sample = (uint64_t)last_cycle * 44100ULL / master_clock;
+    uint64_t curr_sample = (uint64_t)cycle * 44100ULL / master_clock;
+    uint32_t delta_samples = (uint32_t)(curr_sample - last_sample);
+
+    last_cycle = cycle;
+
+    // Output wait commands for the sample delta
+    output_wait_commands(delta_samples);
+}
+
+// =============================================================================
 // Bridge State
 // =============================================================================
 
@@ -354,11 +431,15 @@ static uint8_t board_type = 0;
 // Public API
 // =============================================================================
 
-void serial_bridge_init(void) {
+void serial_bridge_init(uint32_t clock) {
     bridge_enabled = false;
     bridge_connected = false;
     bridge_port[0] = '\0';
     board_type = 0;
+    if (clock > 0) {
+        master_clock = clock;
+    }
+    last_cycle = 0;
 }
 
 void serial_bridge_shutdown(void) {
@@ -405,6 +486,9 @@ bool serial_bridge_connect(const char *port) {
         board_type = response[1];
         bridge_connected = true;
         bridge_enabled = true;
+
+        // Initialize timing for VGM-style wait commands
+        last_cycle = 0;
 
         // Switch to non-blocking mode for real-time streaming
         serial_set_nonblocking();
@@ -454,7 +538,10 @@ bool serial_bridge_auto_connect(void) {
 
 void serial_bridge_disconnect(void) {
     if (bridge_connected) {
-        // Send end-of-stream to silence chips
+        // Flush any pending data
+        serial_bridge_flush();
+
+        // Send end-of-stream (VGM format: just the command byte)
         uint8_t cmd = CMD_END_STREAM;
         serial_write_bytes(&cmd, 1);
 
@@ -497,71 +584,75 @@ uint8_t serial_bridge_get_board_type(void) {
 // Audio Write Functions - Called from YM2612/PSG emulation
 // =============================================================================
 
-// Micro-batch: collect 4 commands then send with one sync write
-#define MICRO_BATCH_SIZE 12  // 4 YM commands max
-static uint8_t micro_batch[MICRO_BATCH_SIZE];
-static int micro_batch_pos = 0;
-static int micro_batch_count = 0;
+// Write buffer for batching commands (reduces USB overhead)
+// Commands are now larger with delta prefix: YM=5 bytes, PSG=4 bytes
+#define WRITE_BUFFER_SIZE 128
+static uint8_t write_buffer[WRITE_BUFFER_SIZE];
+static int write_buffer_pos = 0;
+
+// Add data to write buffer, flush if full
+static void buffer_add(const uint8_t *data, int len) {
+    // If buffer would overflow, flush first
+    if (write_buffer_pos + len > WRITE_BUFFER_SIZE) {
+        if (write_buffer_pos > 0) {
+            serial_write_bytes(write_buffer, write_buffer_pos);
+            write_buffer_pos = 0;
+        }
+    }
+
+    memcpy(write_buffer + write_buffer_pos, data, len);
+    write_buffer_pos += len;
+}
 
 // Public flush function - call once per frame from genesis.c
 void serial_bridge_flush(void) {
-    if (bridge_enabled && micro_batch_pos > 0) {
-        serial_write_bytes(micro_batch, micro_batch_pos);
-        micro_batch_pos = 0;
-        micro_batch_count = 0;
+    if (bridge_enabled && write_buffer_pos > 0) {
+        serial_write_bytes(write_buffer, write_buffer_pos);
+        write_buffer_pos = 0;
     }
 }
 
-static void micro_batch_add(const uint8_t *data, int len) {
-    if (micro_batch_pos + len > MICRO_BATCH_SIZE) {
-        // Batch full, send it
-        serial_write_bytes(micro_batch, micro_batch_pos);
-        micro_batch_pos = 0;
-        micro_batch_count = 0;
-    }
-
-    memcpy(micro_batch + micro_batch_pos, data, len);
-    micro_batch_pos += len;
-    micro_batch_count++;
-
-    // Send after 4 commands
-    if (micro_batch_count >= 4) {
-        serial_write_bytes(micro_batch, micro_batch_pos);
-        micro_batch_pos = 0;
-        micro_batch_count = 0;
-    }
-}
-
-void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value) {
+void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value, uint32_t cycle) {
     if (!bridge_enabled || !serial_is_open()) return;
 
+    // Insert wait commands for elapsed time (VGM-style)
+    add_wait(cycle);
+
+    // Output command (same format as VGM: 0x52/0x53 reg value)
     uint8_t cmd[3] = {
         (port == 0) ? CMD_YM2612_PORT0 : CMD_YM2612_PORT1,
         reg,
         value
     };
-    micro_batch_add(cmd, 3);
+    buffer_add(cmd, 3);
 }
 
-void serial_bridge_psg_write(uint8_t value) {
+void serial_bridge_psg_write(uint8_t value, uint32_t cycle) {
     if (!bridge_enabled || !serial_is_open()) return;
 
-    uint8_t cmd[2] = { CMD_PSG_WRITE, value };
-    micro_batch_add(cmd, 2);
+    // Insert wait commands for elapsed time (VGM-style)
+    add_wait(cycle);
+
+    // Output command (same format as VGM: 0x50 value)
+    uint8_t cmd[2] = {
+        CMD_PSG_WRITE,
+        value
+    };
+    buffer_add(cmd, 2);
 }
 
 void serial_bridge_reset(void) {
     if (!serial_is_open()) return;
 
     // Flush any pending writes first
-    if (micro_batch_pos > 0) {
-        serial_write_bytes(micro_batch, micro_batch_pos);
-        micro_batch_pos = 0;
-        micro_batch_count = 0;
-    }
+    serial_bridge_flush();
 
+    // Send END_STREAM (VGM format: just the command byte 0x66)
     uint8_t cmd = CMD_END_STREAM;
     serial_write_bytes(&cmd, 1);
+
+    // Reset timing for next stream
+    last_cycle = 0;
 
     // Drain any pending response
     uint8_t buf[16];

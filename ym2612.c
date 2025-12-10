@@ -825,7 +825,7 @@ void ym_data_write(ym2612_context * context, uint8_t value)
 		if (context->vgm) {
 			vgm_ym2612_part2_write(context->vgm, context->current_cycle, context->selected_reg, value);
 		}
-		serial_bridge_ym2612_write(1, context->selected_reg, value);
+		serial_bridge_ym2612_write(1, context->selected_reg, value, context->current_cycle);
 		context->part2_regs[context->selected_reg - YM_PART2_START] = value;
 	} else {
 		if (context->selected_reg < YM_PART1_START) {
@@ -834,7 +834,7 @@ void ym_data_write(ym2612_context * context, uint8_t value)
 		if (context->vgm) {
 			vgm_ym2612_part1_write(context->vgm, context->current_cycle, context->selected_reg, value);
 		}
-		serial_bridge_ym2612_write(0, context->selected_reg, value);
+		serial_bridge_ym2612_write(0, context->selected_reg, value, context->current_cycle);
 		context->part1_regs[context->selected_reg - YM_PART1_START] = value;
 	}
 	uint8_t buffer[3] = {context->selected_part, context->selected_reg, value};

@@ -13,7 +13,8 @@
 #include <stdbool.h>
 
 // Initialize the serial bridge subsystem
-void serial_bridge_init(void);
+// master_clock is the Genesis master clock frequency (e.g., 53693175 for NTSC)
+void serial_bridge_init(uint32_t master_clock);
 
 // Shutdown and cleanup
 void serial_bridge_shutdown(void);
@@ -41,8 +42,9 @@ uint8_t serial_bridge_get_board_type(void);
 int serial_bridge_list_ports(char ports[][64], int max_ports);
 
 // Audio write functions - called from chip emulation
-void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value);
-void serial_bridge_psg_write(uint8_t value);
+// cycle is the current emulator cycle count (master clock cycles)
+void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value, uint32_t cycle);
+void serial_bridge_psg_write(uint8_t value, uint32_t cycle);
 
 // Flush buffered writes - call once per frame
 void serial_bridge_flush(void);
