@@ -30,30 +30,16 @@
 #define CMD_YM2612_PORT1 0x53
 #define CMD_END_STREAM   0x66
 #define FLOW_READY       0x06
-#define FLOW_NAK         0x15
-
-// Chunk protocol
-#define CHUNK_HEADER     0x01
-#define CHUNK_SIZE       64   // Match Arduino's expectation
 
 #define SERIAL_BAUD      1000000
 
 // =============================================================================
-// Write Buffer - chunked with flow control
+// Write Buffer - simple batching for efficiency
 // =============================================================================
 
-#define WRITE_BUFFER_SIZE 128
+#define WRITE_BUFFER_SIZE 256
 static uint8_t write_buffer[WRITE_BUFFER_SIZE];
 static int write_buffer_pos = 0;
-
-// Flow control state
-static bool waiting_for_ack = false;
-static int ack_credits = 1;  // Start with 1 credit (can send immediately)
-static bool need_retransmit = false;
-
-// Last sent chunk (for retransmit on NAK)
-static uint8_t last_chunk[CHUNK_SIZE];
-static int last_chunk_len = 0;
 
 // =============================================================================
 // Platform-Specific Serial Implementation
@@ -80,7 +66,7 @@ static bool serial_open(const char *port, int baud) {
         0,              // No sharing
         NULL,           // Default security
         OPEN_EXISTING,
-        0,              // No overlapped I/O
+        FILE_FLAG_OVERLAPPED,  // Async I/O for non-blocking writes
         NULL
     );
 
@@ -126,7 +112,7 @@ static bool serial_open(const char *port, int baud) {
     SetCommTimeouts(serial_handle, &timeouts);
 
     // Increase transmit buffer size to reduce blocking
-    SetupComm(serial_handle, 4096, 4096);
+    SetupComm(serial_handle, 16384, 16384);
 
     // Toggle DTR to reset Arduino
     EscapeCommFunction(serial_handle, CLRDTR);
@@ -164,13 +150,25 @@ static void serial_set_nonblocking(void) {
     SetCommTimeouts(serial_handle, &timeouts);
 }
 
+// Simple synchronous write - blocking but reliable
 static int serial_write_bytes(const uint8_t *data, int len) {
     if (serial_handle == INVALID_HANDLE_VALUE) return -1;
 
     DWORD written;
-    if (!WriteFile(serial_handle, data, len, &written, NULL)) {
-        return -1;
+    OVERLAPPED ov = {0};
+    ov.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+    if (!WriteFile(serial_handle, data, len, &written, &ov)) {
+        if (GetLastError() == ERROR_IO_PENDING) {
+            // Wait for completion
+            WaitForSingleObject(ov.hEvent, INFINITE);
+            GetOverlappedResult(serial_handle, &ov, &written, FALSE);
+        } else {
+            CloseHandle(ov.hEvent);
+            return -1;
+        }
     }
+    CloseHandle(ov.hEvent);
     return (int)written;
 }
 
@@ -178,9 +176,20 @@ static int serial_read_bytes(uint8_t *data, int len) {
     if (serial_handle == INVALID_HANDLE_VALUE) return -1;
 
     DWORD read_count;
-    if (!ReadFile(serial_handle, data, len, &read_count, NULL)) {
-        return -1;
+    OVERLAPPED ov = {0};
+    ov.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+    if (!ReadFile(serial_handle, data, len, &read_count, &ov)) {
+        if (GetLastError() == ERROR_IO_PENDING) {
+            // Wait for read to complete (with timeout from COMMTIMEOUTS)
+            WaitForSingleObject(ov.hEvent, 2000);
+            GetOverlappedResult(serial_handle, &ov, &read_count, FALSE);
+        } else {
+            CloseHandle(ov.hEvent);
+            return -1;
+        }
     }
+    CloseHandle(ov.hEvent);
     return (int)read_count;
 }
 
@@ -312,6 +321,18 @@ static int serial_write_bytes(const uint8_t *data, int len) {
 static int serial_read_bytes(uint8_t *data, int len) {
     if (serial_fd < 0) return -1;
     return read(serial_fd, data, len);
+}
+
+static void serial_set_nonblocking(void) {
+    if (serial_fd < 0) return;
+
+    // Set non-blocking reads
+    struct termios tty;
+    if (tcgetattr(serial_fd, &tty) == 0) {
+        tty.c_cc[VMIN] = 0;
+        tty.c_cc[VTIME] = 0;  // Return immediately
+        tcsetattr(serial_fd, TCSANOW, &tty);
+    }
 }
 
 int serial_bridge_list_ports(char ports[][64], int max_ports) {
@@ -504,120 +525,68 @@ uint8_t serial_bridge_get_board_type(void) {
 }
 
 // =============================================================================
-// Chunked Write Functions - With flow control like stream_vgm.py
+// Simple Direct Write Functions - No chunking, let USB handle buffering
 // =============================================================================
 
-// Check for ACK/NAK responses from Arduino (non-blocking)
-static void check_flow_control(void) {
-    if (!serial_is_open()) return;
-
-    uint8_t buf[16];
-    int n = serial_read_bytes(buf, sizeof(buf));
-    for (int i = 0; i < n; i++) {
-        if (buf[i] == FLOW_READY) {
-            ack_credits++;
-            waiting_for_ack = false;
-            need_retransmit = false;
-        } else if (buf[i] == FLOW_NAK) {
-            // NAK received - need to retransmit last chunk
-            ack_credits++;
-            waiting_for_ack = false;
-            need_retransmit = true;
-        }
-    }
-}
-
-// Send a chunk with header, length, data, checksum (matches stream_vgm.py)
-static void send_chunk(const uint8_t *data, int len) {
-    if (len <= 0 || len > CHUNK_SIZE) return;
-
-    // Save for potential retransmit
-    memcpy(last_chunk, data, len);
-    last_chunk_len = len;
-
-    // Calculate checksum: XOR of length and all data bytes
-    uint8_t checksum = (uint8_t)len;
-    for (int i = 0; i < len; i++) {
-        checksum ^= data[i];
-    }
-
-    // Build packet: [HEADER][LENGTH][DATA...][CHECKSUM]
-    uint8_t header[2] = { CHUNK_HEADER, (uint8_t)len };
-    serial_write_bytes(header, 2);
-    serial_write_bytes(data, len);
-    serial_write_bytes(&checksum, 1);
-
-    // Mark that we're waiting for ACK
-    ack_credits--;
-    waiting_for_ack = true;
-}
-
-// Retransmit last chunk (after NAK)
-static void retransmit_chunk(void) {
-    if (last_chunk_len <= 0) return;
-
-    uint8_t checksum = (uint8_t)last_chunk_len;
-    for (int i = 0; i < last_chunk_len; i++) {
-        checksum ^= last_chunk[i];
-    }
-
-    uint8_t header[2] = { CHUNK_HEADER, (uint8_t)last_chunk_len };
-    serial_write_bytes(header, 2);
-    serial_write_bytes(last_chunk, last_chunk_len);
-    serial_write_bytes(&checksum, 1);
-
-    ack_credits--;
-    waiting_for_ack = true;
-    need_retransmit = false;
-}
-
-// Flush the write buffer as a chunk (internal)
+// Flush the write buffer directly (no chunking protocol)
+// Ensures ALL bytes are written, retrying if needed
 static void flush_write_buffer(void) {
     if (write_buffer_pos <= 0 || !serial_is_open()) return;
 
-    // Check for any pending ACKs/NAKs (non-blocking)
-    check_flow_control();
+    int remaining = write_buffer_pos;
+    int offset = 0;
 
-    // Handle retransmit if needed (prioritize over new data)
-    if (need_retransmit) {
-        retransmit_chunk();
-        return;  // Don't send new data until retransmit is ACK'd
+    while (remaining > 0) {
+        int written = serial_write_bytes(write_buffer + offset, remaining);
+        if (written <= 0) {
+            // Write failed - give up to avoid infinite loop
+            break;
+        }
+        offset += written;
+        remaining -= written;
     }
 
-    // Send the chunk - never block, Arduino has a ring buffer
-    send_chunk(write_buffer, write_buffer_pos);
     write_buffer_pos = 0;
-}
-
-// Public flush function - call once per frame from genesis.c
-void serial_bridge_flush(void) {
-    if (bridge_enabled) {
-        flush_write_buffer();
-        // Also check for any pending ACKs
-        check_flow_control();
-    }
-}
-
-// Add bytes to write buffer, flush when full
-static void buffered_write(const uint8_t *data, int len) {
-    // If this write would exceed chunk size, flush first
-    if (write_buffer_pos + len > CHUNK_SIZE) {
-        flush_write_buffer();
-    }
-
-    // Add to buffer
-    memcpy(write_buffer + write_buffer_pos, data, len);
-    write_buffer_pos += len;
-
-    // Auto-flush when buffer reaches chunk size
-    if (write_buffer_pos >= CHUNK_SIZE) {
-        flush_write_buffer();
-    }
 }
 
 // =============================================================================
 // Audio Write Functions - Called from YM2612/PSG emulation
 // =============================================================================
+
+// Micro-batch: collect 4 commands then send with one sync write
+#define MICRO_BATCH_SIZE 12  // 4 YM commands max
+static uint8_t micro_batch[MICRO_BATCH_SIZE];
+static int micro_batch_pos = 0;
+static int micro_batch_count = 0;
+
+// Public flush function - call once per frame from genesis.c
+void serial_bridge_flush(void) {
+    if (bridge_enabled && micro_batch_pos > 0) {
+        serial_write_bytes(micro_batch, micro_batch_pos);
+        micro_batch_pos = 0;
+        micro_batch_count = 0;
+    }
+}
+
+static void micro_batch_add(const uint8_t *data, int len) {
+    if (micro_batch_pos + len > MICRO_BATCH_SIZE) {
+        // Batch full, send it
+        serial_write_bytes(micro_batch, micro_batch_pos);
+        micro_batch_pos = 0;
+        micro_batch_count = 0;
+    }
+
+    memcpy(micro_batch + micro_batch_pos, data, len);
+    micro_batch_pos += len;
+    micro_batch_count++;
+
+    // Send after 4 commands
+    if (micro_batch_count >= 4) {
+        serial_write_bytes(micro_batch, micro_batch_pos);
+        micro_batch_pos = 0;
+        micro_batch_count = 0;
+    }
+}
 
 void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value) {
     if (!bridge_enabled || !serial_is_open()) return;
@@ -627,21 +596,25 @@ void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value) {
         reg,
         value
     };
-    buffered_write(cmd, 3);
+    micro_batch_add(cmd, 3);
 }
 
 void serial_bridge_psg_write(uint8_t value) {
     if (!bridge_enabled || !serial_is_open()) return;
 
     uint8_t cmd[2] = { CMD_PSG_WRITE, value };
-    buffered_write(cmd, 2);
+    micro_batch_add(cmd, 2);
 }
 
 void serial_bridge_reset(void) {
     if (!serial_is_open()) return;
 
     // Flush any pending writes first
-    flush_write_buffer();
+    if (micro_batch_pos > 0) {
+        serial_write_bytes(micro_batch, micro_batch_pos);
+        micro_batch_pos = 0;
+        micro_batch_count = 0;
+    }
 
     uint8_t cmd = CMD_END_STREAM;
     serial_write_bytes(&cmd, 1);
