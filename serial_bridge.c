@@ -200,6 +200,9 @@ int serial_bridge_list_ports(char ports[][64], int max_ports) {
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/ioctl.h>
+#ifdef __APPLE__
+#include <IOKit/serial/ioss.h>
+#endif
 
 static int serial_fd = -1;
 
@@ -224,10 +227,18 @@ static bool serial_open(const char *port, int baud) {
     switch (baud) {
         case 115200:  speed = B115200; break;
         case 230400:  speed = B230400; break;
+#ifdef B460800
         case 460800:  speed = B460800; break;
+#endif
+#ifdef B500000
         case 500000:  speed = B500000; break;
+#endif
+#ifdef B576000
         case 576000:  speed = B576000; break;
+#endif
+#ifdef B921600
         case 921600:  speed = B921600; break;
+#endif
 #ifdef B1000000
         case 1000000: speed = B1000000; break;
 #endif
@@ -236,6 +247,15 @@ static bool serial_open(const char *port, int baud) {
 
     cfsetispeed(&tty, speed);
     cfsetospeed(&tty, speed);
+
+#ifdef __APPLE__
+    // macOS: use IOSSIOSPEED for custom baud rates not in termios
+    // This handles 460800, 500000, 576000, 921600, 1000000, etc.
+    speed_t custom_speed = baud;
+    if (ioctl(serial_fd, IOSSIOSPEED, &custom_speed) == -1) {
+        // Fall back to whatever cfsetispeed set
+    }
+#endif
 
     // 8N1, no flow control
     tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
