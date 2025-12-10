@@ -54,6 +54,25 @@ make OS=Windows
 make NO_GL=1
 ```
 
+## Running Pre-built Binaries
+
+Pre-built binaries are available from [GitHub Actions](https://github.com/aarontodd82/blastem-genesis-engine/actions).
+
+### Windows
+All required DLLs (SDL2.dll, glew32.dll) are included. Just extract and run.
+
+### Linux
+Install runtime libraries:
+```bash
+sudo apt install libsdl2-2.0-0 libglew2.2
+```
+
+### macOS
+Install runtime libraries:
+```bash
+brew install sdl2 glew
+```
+
 ## Hardware Setup
 
 1. Upload the `EmulatorBridge` sketch to your Genesis Engine board:
