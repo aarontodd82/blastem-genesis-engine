@@ -4,18 +4,16 @@ This is a modified version of [BlastEm](https://www.retrodev.com/blastem/) that 
 
 ## How It Works
 
-BlastEm emulates the Genesis/Mega Drive with cycle-accurate timing. When the emulated CPU writes to the YM2612 (FM synthesizer) or SN76489 (PSG), we intercept those writes and send them over serial to a microcontroller connected to real audio chips.
-
-The emulator handles all timing - we just send register writes as they occur. No preprocessing, no wait commands, no buffering strategy needed on the PC side.
+BlastEm emulates the Genesis/Mega Drive with cycle-accurate timing. When the emulated CPU writes to the YM2612 (FM synthesizer) or SN76489 (PSG), we intercept those writes and stream them over serial using VGM-style timing commands to a microcontroller connected to real audio chips.
 
 ```
 BlastEm (emulation)          Serial (1Mbaud)          Genesis Engine Board
 ┌─────────────────┐                                  ┌──────────────────┐
-│   YM2612 write  │ ──── 0x52 reg val ──────────────>│ Real YM2612 chip │
-│   PSG write     │ ──── 0x50 val ──────────────────>│ Real SN76489 PSG │
+│   YM2612 write  │ ──── [wait] 0x52 reg val ───────>│ Real YM2612 chip │
+│   PSG write     │ ──── [wait] 0x50 val ───────────>│ Real SN76489 PSG │
 └─────────────────┘                                  └──────────────────┘
          │
-         └── Timing is natural - writes happen when the emulated CPU does them
+         └── VGM-style wait commands encode timing at 44.1kHz sample resolution
 ```
 
 ## Building
@@ -98,27 +96,40 @@ bindings {
 
 ## Protocol
 
-The bridge uses a simple protocol that matches VGM command bytes:
+The bridge uses VGM-compatible command bytes with timing:
 
+### Audio Commands
 | Command | Format | Description |
 |---------|--------|-------------|
 | `0x50` | `0x50 <value>` | Write to PSG |
 | `0x52` | `0x52 <reg> <value>` | Write to YM2612 Port 0 |
 | `0x53` | `0x53 <reg> <value>` | Write to YM2612 Port 1 |
-| `0x00` | `0x00` | PING (connection test) |
-| `0x66` | `0x66` | End/reset (silence chips) |
 
-The board responds with:
-- `0x0F <board_type> 0x06` after PING (ACK + type + READY)
-- `0x06` after reset (READY)
+### Timing Commands
+| Command | Format | Description |
+|---------|--------|-------------|
+| `0x61` | `0x61 <lo> <hi>` | Wait N samples (16-bit little-endian, 44.1kHz) |
+| `0x62` | `0x62` | Wait 735 samples (1/60 sec) |
+| `0x63` | `0x63` | Wait 882 samples (1/50 sec) |
+| `0x70-0x7F` | single byte | Wait 1-16 samples (0x70=1, 0x7F=16) |
+
+### Control Commands
+| Command | Format | Description |
+|---------|--------|-------------|
+| `0xAA` | `0xAA` | PING (connection test) |
+| `0x66` | `0x66` | End stream / reset hardware |
+
+The board responds to PING with: `0x0F <board_type> 0x06` (ACK + type + READY)
 
 ## Files Modified
 
 From the original BlastEm source:
 
-- `serial_bridge.c` / `serial_bridge.h` - **NEW**: Serial communication module
+- `serial_bridge.c` / `serial_bridge.h` - **NEW**: Serial communication and VGM-style timing
 - `ym2612.c` - Added `serial_bridge_ym2612_write()` calls
 - `psg.c` - Added `serial_bridge_psg_write()` call
+- `genesis.c` - Added cycle adjustment sync, silence on pause/menu
+- `render_sdl.c` - Added disconnect on application close
 - `bindings.c` - Added UI actions for hardware audio toggle/connect
 - `default.cfg` - Added default key bindings (H and J)
 - `Makefile` - Added `serial_bridge.o` to AUDIOOBJS
@@ -137,8 +148,9 @@ From the original BlastEm source:
 - Check for other programs using the serial port
 
 ### Hanging notes when pausing
-- The board has a 1-second timeout that auto-silences chips
-- You can also press J to disconnect cleanly
+- Notes are automatically silenced when entering menus or pausing
+- Closing the application sends a reset command to silence hardware
+- Press J to manually disconnect if needed
 
 ## License
 
