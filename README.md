@@ -56,7 +56,7 @@ make NO_GL=1
 
 ## Running Pre-built Binaries
 
-Pre-built binaries are available from [GitHub Actions](https://github.com/aarontodd82/blastem-genesis-engine/actions).
+Pre-built binaries are available from the [Releases](https://github.com/aarontodd82/blastem-genesis-engine/releases) page.
 
 ### Windows
 All required DLLs (SDL2.dll, glew32.dll) are included. Just extract and run.
