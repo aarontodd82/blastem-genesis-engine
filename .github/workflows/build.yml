@@ -31,7 +31,7 @@ jobs:
             shaders/
 
   build-macos:
-    runs-on: macos-13  # Intel, arm64 not supported by BlastEm Makefile
+    runs-on: macos-15-intel  # Intel, arm64 not supported by BlastEm Makefile
     steps:
       - uses: actions/checkout@v4
 
