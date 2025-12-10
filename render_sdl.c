@@ -18,6 +18,7 @@
 #include "png.h"
 #include "config.h"
 #include "controller_info.h"
+#include "serial_bridge.h"
 
 #ifndef DISABLE_OPENGL
 #ifdef USE_GLES
@@ -501,6 +502,7 @@ static char * fps_caption = NULL;
 
 static void render_quit()
 {
+	serial_bridge_disconnect();  // Silence and disconnect hardware audio
 	render_close_audio();
 	free_surfaces();
 #ifndef DISABLE_OPENGL
