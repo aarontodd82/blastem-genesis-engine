@@ -26,7 +26,7 @@
 // Protocol Constants (must match EmulatorBridge Arduino sketch)
 // =============================================================================
 
-#define CMD_PING         0x00
+#define CMD_PING         0xAA  // Chosen to not conflict with VGM commands or data
 #define CMD_ACK          0x0F
 #define CMD_PSG_WRITE    0x50
 #define CMD_YM2612_PORT0 0x52
