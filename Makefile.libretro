@@ -1,0 +1,70 @@
+UNAME=$(shell uname -s)
+UNAMEM=$(shell uname -m)
+LIBRETRO=1
+
+platform ?= unix
+
+ifeq ($(platform), emscripten)
+	platform = emscripten
+	ABI := x86_64
+	target = libblastem.so
+	libname = blastem_libretro_emscripten.bc
+else ifeq ($(MSYSTEM),MINGW64)
+	platform = win
+	OS :=Windows
+	CC ?=gcc
+	ABI := x86_64
+	target = libblastem.dll
+	libname = blastem_libretro.dll
+else ifeq ($(MSYSTEM),MINGW32)
+	platform = win
+	OS :=Windows
+	CC ?=gcc
+	ABI := i686
+	target = libblastem.dll
+	libname = blastem_libretro.dll
+else ifneq ($(findstring Darwin,$(UNAME)),)
+	platform = osx
+	OS :=Darwin
+	CC ?=gcc
+	ABI := x86_64
+	target = libblastem.dylib
+	libname = blastem_libretro.dylib
+else ifneq ($(findstring Haiku,$(UNAME)),)
+	platform = haiku
+	OS :=Haiku
+ifeq ($(UNAMEM),x86_64)
+	ABI :=x86_64
+	CC ?=gcc
+else
+	ABI :=i686
+	CC :=gcc-x86
+endif
+	target = libblastem.so
+	libname = blastem_libretro.so
+else
+	platform = linux
+	OS :=Linux
+	CC ?=gcc
+ifeq ($(ARCH),x86)
+	ABI := i686
+else
+	ABI := x86_64
+endif
+	target = libblastem.so
+	libname = blastem_libretro.so
+endif
+
+
+
+core: $(OBJ)
+	$(MAKE) $(target) OS=$(OS) CC=$(CC) CPU=$(ABI) LIBRETRO=$(LIBRETRO)
+	cp -v $(target) $(libname)
+
+install: $(libname)
+	install -Dp -m755 $(libname) $(DESTDIR)$(prefix)/lib/libretro/$(libname)
+
+.PHONY: clean
+
+clean:
+	make clean
