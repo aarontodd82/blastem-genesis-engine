@@ -34,14 +34,6 @@
 #define SERIAL_BAUD      1000000
 
 // =============================================================================
-// Write Buffer - simple batching for efficiency
-// =============================================================================
-
-#define WRITE_BUFFER_SIZE 256
-static uint8_t write_buffer[WRITE_BUFFER_SIZE];
-static int write_buffer_pos = 0;
-
-// =============================================================================
 // Platform-Specific Serial Implementation
 // =============================================================================
 
@@ -66,7 +58,7 @@ static bool serial_open(const char *port, int baud) {
         0,              // No sharing
         NULL,           // Default security
         OPEN_EXISTING,
-        FILE_FLAG_OVERLAPPED,  // Async I/O for non-blocking writes
+        0,              // Synchronous I/O
         NULL
     );
 
@@ -150,25 +142,13 @@ static void serial_set_nonblocking(void) {
     SetCommTimeouts(serial_handle, &timeouts);
 }
 
-// Simple synchronous write - blocking but reliable
 static int serial_write_bytes(const uint8_t *data, int len) {
     if (serial_handle == INVALID_HANDLE_VALUE) return -1;
 
     DWORD written;
-    OVERLAPPED ov = {0};
-    ov.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-    if (!WriteFile(serial_handle, data, len, &written, &ov)) {
-        if (GetLastError() == ERROR_IO_PENDING) {
-            // Wait for completion
-            WaitForSingleObject(ov.hEvent, INFINITE);
-            GetOverlappedResult(serial_handle, &ov, &written, FALSE);
-        } else {
-            CloseHandle(ov.hEvent);
-            return -1;
-        }
+    if (!WriteFile(serial_handle, data, len, &written, NULL)) {
+        return -1;
     }
-    CloseHandle(ov.hEvent);
     return (int)written;
 }
 
@@ -176,20 +156,9 @@ static int serial_read_bytes(uint8_t *data, int len) {
     if (serial_handle == INVALID_HANDLE_VALUE) return -1;
 
     DWORD read_count;
-    OVERLAPPED ov = {0};
-    ov.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-    if (!ReadFile(serial_handle, data, len, &read_count, &ov)) {
-        if (GetLastError() == ERROR_IO_PENDING) {
-            // Wait for read to complete (with timeout from COMMTIMEOUTS)
-            WaitForSingleObject(ov.hEvent, 2000);
-            GetOverlappedResult(serial_handle, &ov, &read_count, FALSE);
-        } else {
-            CloseHandle(ov.hEvent);
-            return -1;
-        }
+    if (!ReadFile(serial_handle, data, len, &read_count, NULL)) {
+        return -1;
     }
-    CloseHandle(ov.hEvent);
     return (int)read_count;
 }
 
@@ -522,31 +491,6 @@ const char* serial_bridge_get_port(void) {
 
 uint8_t serial_bridge_get_board_type(void) {
     return board_type;
-}
-
-// =============================================================================
-// Simple Direct Write Functions - No chunking, let USB handle buffering
-// =============================================================================
-
-// Flush the write buffer directly (no chunking protocol)
-// Ensures ALL bytes are written, retrying if needed
-static void flush_write_buffer(void) {
-    if (write_buffer_pos <= 0 || !serial_is_open()) return;
-
-    int remaining = write_buffer_pos;
-    int offset = 0;
-
-    while (remaining > 0) {
-        int written = serial_write_bytes(write_buffer + offset, remaining);
-        if (written <= 0) {
-            // Write failed - give up to avoid infinite loop
-            break;
-        }
-        offset += written;
-        remaining -= written;
-    }
-
-    write_buffer_pos = 0;
 }
 
 // =============================================================================
