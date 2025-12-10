@@ -1385,6 +1385,7 @@ static void handle_reset_requests(genesis_context *gen)
 		vdp_release_framebuffer(gen->vdp);
 		render_pause_source(gen->ym->audio);
 		render_pause_source(gen->psg->audio);
+		serial_bridge_silence();  // Silence hardware audio (preserves patches)
 	}
 }
 

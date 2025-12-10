@@ -659,6 +659,41 @@ void serial_bridge_reset(void) {
     serial_read_bytes(buf, sizeof(buf));
 }
 
+void serial_bridge_silence(void) {
+    if (!bridge_enabled || !serial_is_open()) return;
+
+    // Flush any pending writes first
+    serial_bridge_flush();
+
+    // Key off all 6 FM channels and silence all 4 PSG channels
+    // Add 1-sample waits (0x70) between ALL commands for hardware timing
+    uint8_t silence_cmds[] = {
+        // FM key-off (register 0x28)
+        CMD_YM2612_PORT0, 0x28, 0x00,  // Channel 1 key off
+        CMD_WAIT_SHORT,
+        CMD_YM2612_PORT0, 0x28, 0x01,  // Channel 2 key off
+        CMD_WAIT_SHORT,
+        CMD_YM2612_PORT0, 0x28, 0x02,  // Channel 3 key off
+        CMD_WAIT_SHORT,
+        CMD_YM2612_PORT0, 0x28, 0x04,  // Channel 4 key off
+        CMD_WAIT_SHORT,
+        CMD_YM2612_PORT0, 0x28, 0x05,  // Channel 5 key off
+        CMD_WAIT_SHORT,
+        CMD_YM2612_PORT0, 0x28, 0x06,  // Channel 6 key off
+        CMD_WAIT_SHORT,
+        // PSG volume off
+        CMD_PSG_WRITE, 0x9F,           // Channel 0 volume off
+        CMD_WAIT_SHORT,
+        CMD_PSG_WRITE, 0xBF,           // Channel 1 volume off
+        CMD_WAIT_SHORT,
+        CMD_PSG_WRITE, 0xDF,           // Channel 2 volume off
+        CMD_WAIT_SHORT,
+        CMD_PSG_WRITE, 0xFF,           // Channel 3 (noise) volume off
+        CMD_WAIT_SHORT,
+    };
+    serial_write_bytes(silence_cmds, sizeof(silence_cmds));
+}
+
 void serial_bridge_adjust_cycles(uint32_t deduction) {
     // Adjust last_cycle to match emulator's cycle adjustment
     // Same logic as vgm_adjust_cycles() in vgm.c

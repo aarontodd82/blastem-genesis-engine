@@ -52,6 +52,9 @@ void serial_bridge_flush(void);
 // Reset/silence hardware (called on ROM change, emulator reset, etc.)
 void serial_bridge_reset(void);
 
+// Silence all channels without resetting (preserves patch data)
+void serial_bridge_silence(void);
+
 // Adjust cycle counter when emulator adjusts cycles (prevents timing drift)
 void serial_bridge_adjust_cycles(uint32_t deduction);
 
