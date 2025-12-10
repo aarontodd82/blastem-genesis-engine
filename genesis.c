@@ -468,6 +468,7 @@ m68k_context * sync_components(m68k_context * context, uint32_t address)
 			if (gen->ym->vgm) {
 				vgm_adjust_cycles(gen->ym->vgm, deduction);
 			}
+			serial_bridge_adjust_cycles(deduction);
 			gen->psg->cycles -= deduction;
 			if (gen->reset_cycle != CYCLE_NEVER) {
 				gen->reset_cycle -= deduction;
@@ -926,6 +927,7 @@ static m68k_context * io_write(uint32_t location, m68k_context * context, uint8_
 						gen->z80->reset = 1;
 					}
 					ym_reset(gen->ym);
+					serial_bridge_reset();
 				}
 			} else if (masked != 0x11300 && masked != 0x11000) {
 				fatal_error("Machine freeze due to unmapped write to address %X\n", location | 0xA00000);
@@ -1368,6 +1370,7 @@ static void handle_reset_requests(genesis_context *gen)
 			z80_assert_reset(gen->z80, gen->m68k->current_cycle);
 			z80_clear_busreq(gen->z80, gen->m68k->current_cycle);
 			ym_reset(gen->ym);
+			serial_bridge_reset();
 			//Is there any sort of VDP reset?
 			m68k_reset(gen->m68k);
 		}

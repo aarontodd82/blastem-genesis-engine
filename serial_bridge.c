@@ -658,3 +658,13 @@ void serial_bridge_reset(void) {
     uint8_t buf[16];
     serial_read_bytes(buf, sizeof(buf));
 }
+
+void serial_bridge_adjust_cycles(uint32_t deduction) {
+    // Adjust last_cycle to match emulator's cycle adjustment
+    // Same logic as vgm_adjust_cycles() in vgm.c
+    if (deduction > last_cycle) {
+        last_cycle = 0;
+    } else {
+        last_cycle -= deduction;
+    }
+}
