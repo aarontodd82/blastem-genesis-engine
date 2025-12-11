@@ -447,6 +447,11 @@ static bool bridge_connected = false;
 static char bridge_port[256] = "";
 static uint8_t board_type = 0;
 
+// DAC rate reduction for slow boards (Uno/Mega can't keep up with full rate)
+// Keep every Nth sample - matches stream_vgm.py behavior
+#define DAC_RATE_DIVISOR_AVR 4  // 1/4 rate for Arduino boards
+static uint8_t dac_counter = 0;
+
 // =============================================================================
 // Public API
 // =============================================================================
@@ -456,6 +461,7 @@ void serial_bridge_init(uint32_t clock) {
     bridge_connected = false;
     bridge_port[0] = '\0';
     board_type = 0;
+    dac_counter = 0;
     if (clock > 0) {
         master_clock = clock;
     }
@@ -635,6 +641,17 @@ void serial_bridge_flush(void) {
 void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value, uint32_t cycle) {
     if (!bridge_enabled || !serial_is_open()) return;
 
+    // DAC rate reduction for slow boards (Uno=1, Mega=2, Teensy=4 for testing)
+    // Register 0x2A on port 0 is the DAC data register
+    // TODO: Remove board_type == 4 after testing - Teensy doesn't need this
+    if (port == 0 && reg == 0x2A && (board_type == 1 || board_type == 2 || board_type == 4)) {
+        dac_counter++;
+        if (dac_counter < DAC_RATE_DIVISOR_AVR) {
+            return;  // Skip this DAC sample
+        }
+        dac_counter = 0;  // Reset counter, send this sample
+    }
+
     // Insert wait commands for elapsed time (VGM-style)
     add_wait(cycle);
 
@@ -673,6 +690,7 @@ void serial_bridge_reset(void) {
 
     // Reset timing for next stream
     last_cycle = 0;
+    dac_counter = 0;
 
     // Drain any pending response
     uint8_t buf[16];
