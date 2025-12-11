@@ -11,7 +11,6 @@
 #include "menu.h"
 #include "bindings.h"
 #include "controller_info.h"
-#include "serial_bridge.h"
 #ifndef DISABLE_NUKLEAR
 #include "nuklear_ui/blastem_nuklear.h"
 #endif
@@ -42,9 +41,7 @@ typedef enum {
 	UI_PLANE_DEBUG,
 	UI_VRAM_DEBUG,
 	UI_CRAM_DEBUG,
-	UI_COMPOSITE_DEBUG,
-	UI_TOGGLE_HW_AUDIO,
-	UI_HW_AUDIO_CONNECT
+	UI_COMPOSITE_DEBUG
 } ui_action;
 
 typedef struct {
@@ -406,18 +403,6 @@ void handle_binding_up(keybinding * binding)
 				}
 			}
 			break;
-		case UI_TOGGLE_HW_AUDIO:
-			if (serial_bridge_is_connected()) {
-				serial_bridge_enable(!serial_bridge_is_enabled());
-			}
-			break;
-		case UI_HW_AUDIO_CONNECT:
-			if (serial_bridge_is_connected()) {
-				serial_bridge_disconnect();
-			} else {
-				serial_bridge_auto_connect();
-			}
-			break;
 		case UI_EXIT:
 #ifndef DISABLE_NUKLEAR
 			if (is_nuklear_active()) {
@@ -668,10 +653,6 @@ int parse_binding_target(int device_num, char * target, tern_node * padbuttons, 
 			*subtype_a = UI_SCREENSHOT;
 		} else if (!strcmp(target + 3, "vgm_log")) {
 			*subtype_a = UI_VGM_LOG;
-		} else if (!strcmp(target + 3, "toggle_hw_audio")) {
-			*subtype_a = UI_TOGGLE_HW_AUDIO;
-		} else if (!strcmp(target + 3, "hw_audio_connect")) {
-			*subtype_a = UI_HW_AUDIO_CONNECT;
 		} else if(!strcmp(target + 3, "exit")) {
 			*subtype_a = UI_EXIT;
 		} else if (!strcmp(target + 3, "plane_debug")) {

@@ -31,6 +31,7 @@
 #include "menu.h"
 #include "zip.h"
 #include "event_log.h"
+#include "serial_bridge.h"
 #ifndef DISABLE_NUKLEAR
 #include "nuklear_ui/blastem_nuklear.h"
 #endif
@@ -655,6 +656,13 @@ int main(int argc, char ** argv)
 		}
 		render_init(width, height, "BlastEm", fullscreen);
 		render_set_drag_drop_handler(on_drag_drop);
+
+		// Auto-detect and connect to Genesis Engine hardware audio
+		if (serial_bridge_auto_connect()) {
+			printf("Genesis Engine audio board found, using hardware audio\n");
+		} else {
+			printf("Genesis Engine audio board not found. Check connection and restart BlastEm\n");
+		}
 	}
 	set_bindings();
 	

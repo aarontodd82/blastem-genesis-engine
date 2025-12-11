@@ -6,6 +6,7 @@
 #include "util.h"
 #include "config.h"
 #include "blastem.h"
+#include "serial_bridge.h"
 
 static uint8_t output_channels;
 static uint32_t buffer_samples, sample_rate;
@@ -106,6 +107,22 @@ int mix_and_convert(unsigned char *byte_stream, int len, int *min_remaining_out)
 	memset(mix_dest, 0, samples * sizeof(float));
 	int min_buffered = INT_MAX;
 	int min_remaining_buffer = INT_MAX;
+
+	// Skip software audio mixing when hardware audio is connected
+	if (serial_bridge_is_connected()) {
+		// Still need to consume buffers to prevent backup
+		for (uint8_t i = 0; i < num_audio_sources; i++)
+		{
+			audio_sources[i]->front_populated = 0;
+			render_buffer_consumed(audio_sources[i]);
+		}
+		convert(mix_dest, byte_stream, samples);
+		if (min_remaining_out) {
+			*min_remaining_out = INT_MAX;
+		}
+		return INT_MAX;
+	}
+
 	for (uint8_t i = 0; i < num_audio_sources; i++)
 	{
 		int buffered = mix_f32(audio_sources[i], mix_dest, samples);

@@ -83,35 +83,14 @@ brew install sdl2 glew
 
 ## Usage
 
-### Keyboard Shortcuts
+Hardware audio is automatically detected on startup:
 
-| Key | Action |
-|-----|--------|
-| `J` | Connect/disconnect hardware audio (auto-detect) |
-| `H` | Toggle hardware audio on/off (when connected) |
-| `M` | Toggle VGM logging (existing BlastEm feature) |
+1. Connect your Genesis Engine board via USB
+2. Start BlastEm: `./blastem game.bin`
+3. If detected, you'll see: "Genesis Engine audio board found, using hardware audio"
+4. If not detected: "Genesis Engine audio board not found. Check connection and restart BlastEm"
 
-### Command Line
-
-```bash
-# Run normally, then press J to connect
-./blastem game.bin
-
-# The emulator will scan for Genesis Engine boards and connect automatically
-```
-
-### Configuration
-
-You can also set up bindings in your `blastem.cfg`:
-
-```
-bindings {
-    keys {
-        h ui.toggle_hw_audio
-        j ui.hw_audio_connect
-    }
-}
-```
+When hardware audio is connected, software audio is automatically disabled - all audio comes from the real chips.
 
 ## Protocol
 
@@ -148,9 +127,9 @@ From the original BlastEm source:
 - `ym2612.c` - Added `serial_bridge_ym2612_write()` calls
 - `psg.c` - Added `serial_bridge_psg_write()` call
 - `genesis.c` - Added cycle adjustment sync, silence on pause/menu
+- `blastem.c` - Added auto-connect on startup
 - `render_sdl.c` - Added disconnect on application close
-- `bindings.c` - Added UI actions for hardware audio toggle/connect
-- `default.cfg` - Added default key bindings (H and J)
+- `render_audio.c` - Mute software audio when hardware connected
 - `Makefile` - Added `serial_bridge.o` to AUDIOOBJS
 
 ## Troubleshooting
@@ -169,7 +148,6 @@ From the original BlastEm source:
 ### Hanging notes when pausing
 - Notes are automatically silenced when entering menus or pausing
 - Closing the application sends a reset command to silence hardware
-- Press J to manually disconnect if needed
 
 ## License
 
