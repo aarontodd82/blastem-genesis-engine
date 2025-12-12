@@ -2,9 +2,10 @@ name: Build
 
 on:
   push:
-    branches: [ master ]
+    branches: [master]
+    tags: ['v*']
   pull_request:
-    branches: [ master ]
+    branches: [master]
 
 jobs:
   build-linux:
@@ -20,18 +21,21 @@ jobs:
       - name: Build
         run: make
 
+      - name: Package
+        run: |
+          mkdir -p blastem-linux
+          cp blastem default.cfg rom.db blastem-linux/
+          cp -r shaders blastem-linux/
+          tar -czvf blastem-linux.tar.gz blastem-linux
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: blastem-linux
-          path: |
-            blastem
-            default.cfg
-            rom.db
-            shaders/
+          path: blastem-linux.tar.gz
 
   build-macos:
-    runs-on: macos-15-intel  # Intel, arm64 not supported by BlastEm Makefile
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -41,15 +45,18 @@ jobs:
       - name: Build
         run: make HOST_ZLIB=1
 
+      - name: Package
+        run: |
+          mkdir -p blastem-macos
+          cp blastem default.cfg rom.db blastem-macos/
+          cp -r shaders blastem-macos/
+          zip -r blastem-macos.zip blastem-macos
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: blastem-macos
-          path: |
-            blastem
-            default.cfg
-            rom.db
-            shaders/
+          path: blastem-macos.zip
 
   build-windows:
     runs-on: windows-latest
@@ -69,23 +76,43 @@ jobs:
             mingw-w64-x86_64-glew
             mingw-w64-x86_64-pkgconf
             make
+            zip
 
       - name: Build
         run: make
 
-      - name: Copy DLLs
+      - name: Package
         run: |
-          cp /mingw64/bin/SDL2.dll .
-          cp /mingw64/bin/glew32.dll .
+          mkdir -p blastem-windows
+          cp blastem.exe default.cfg rom.db blastem-windows/
+          cp -r shaders blastem-windows/
+          cp /mingw64/bin/SDL2.dll blastem-windows/
+          cp /mingw64/bin/glew32.dll blastem-windows/
+          zip -r blastem-windows.zip blastem-windows
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: blastem-windows
-          path: |
-            blastem.exe
-            SDL2.dll
-            glew32.dll
-            default.cfg
-            rom.db
-            shaders/
+          path: blastem-windows.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/**/*
