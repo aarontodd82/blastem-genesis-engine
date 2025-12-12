@@ -96,6 +96,7 @@ typedef struct {
 
 	uint8_t     timer_control;
 	uint8_t     dac_enable;
+	uint8_t     dac_only;      // When set, only output DAC audio (for hardware FM/PSG)
 	uint8_t     lfo_enable;
 	uint8_t     lfo_freq;
 	uint8_t     lfo_counter;
@@ -140,6 +141,7 @@ void ym_init(ym2612_context * context, uint32_t master_clock, uint32_t clock_div
 void ym_reset(ym2612_context *context);
 void ym_free(ym2612_context *context);
 void ym_enable_zero_offset(ym2612_context *context, uint8_t enabled);
+void ym_set_dac_only(ym2612_context *context, uint8_t enabled);
 void ym_adjust_master_clock(ym2612_context * context, uint32_t master_clock);
 void ym_adjust_cycles(ym2612_context *context, uint32_t deduction);
 void ym_run(ym2612_context * context, uint32_t to_cycle);

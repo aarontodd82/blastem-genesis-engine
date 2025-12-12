@@ -25,11 +25,13 @@ typedef struct {
 	uint8_t  noise_use_tone;
 	uint8_t  noise_type;
 	uint8_t  latch;
+	uint8_t  mute;  // When set, don't output audio (hardware handles it)
 } psg_context;
 
 
 void psg_init(psg_context * context, uint32_t master_clock, uint32_t clock_div);
 void psg_free(psg_context *context);
+void psg_set_mute(psg_context *context, uint8_t mute);
 void psg_adjust_master_clock(psg_context * context, uint32_t master_clock);
 void psg_write(psg_context * context, uint8_t value);
 void psg_run(psg_context * context, uint32_t cycles);

@@ -27,6 +27,11 @@ void psg_free(psg_context *context)
 	free(context);
 }
 
+void psg_set_mute(psg_context *context, uint8_t mute)
+{
+	context->mute = mute;
+}
+
 void psg_adjust_master_clock(psg_context * context, uint32_t master_clock)
 {
 	render_audio_adjust_clock(context->audio, master_clock, context->clock_inc);
@@ -113,16 +118,19 @@ void psg_run(psg_context * context, uint32_t cycles)
 		}
 
 		int16_t accum = 0;
-		
-		for (int i = 0; i < 3; i++) {
-			if (context->output_state[i]) {
-				accum += volume_table[context->volume[i]];
+
+		// When muted, hardware handles PSG - output silence
+		if (!context->mute) {
+			for (int i = 0; i < 3; i++) {
+				if (context->output_state[i]) {
+					accum += volume_table[context->volume[i]];
+				}
+			}
+			if (context->noise_out) {
+				accum += volume_table[context->volume[3]];
 			}
 		}
-		if (context->noise_out) {
-			accum += volume_table[context->volume[3]];
-		}
-		
+
 		render_put_mono_sample(context->audio, accum);
 
 		context->cycles += context->clock_inc;

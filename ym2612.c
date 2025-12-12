@@ -167,6 +167,7 @@ void ym_reset(ym2612_context *context)
 	context->csm_keyon = 0;
 	context->ch3_mode = 0;
 	context->dac_enable = 0;
+	// dac_only is NOT reset - it's a config flag set once at init
 	context->status = 0;
 	context->timer_a_load = 0;
 	context->timer_b_load = 0;
@@ -310,6 +311,12 @@ void ym_enable_zero_offset(ym2612_context *context, uint8_t enabled)
 		context->volume_div = 3;
 	}
 }
+
+void ym_set_dac_only(ym2612_context *context, uint8_t enabled)
+{
+	context->dac_only = enabled;
+}
+
 #define YM_MOD_SHIFT 1
 
 #define CSM_MODE 0x80
@@ -593,6 +600,17 @@ void ym_output_sample(ym2612_context *context)
 {
 	int16_t left = 0, right = 0;
 	for (int i = 0; i < NUM_CHANNELS; i++) {
+		// DAC-only mode: hardware handles FM, software only outputs DAC samples
+		if (context->dac_only) {
+			// Skip channels 0-4 (always FM, hardware handles them)
+			if (i < 5) {
+				continue;
+			}
+			// Channel 5: skip if in FM mode (hardware handles), include if in DAC mode
+			if (i == 5 && !context->dac_enable) {
+				continue;
+			}
+		}
 		int16_t value = context->channels[i].output;
 		if (value > 0x1FE0) {
 			value = 0x1FE0;

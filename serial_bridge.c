@@ -447,10 +447,20 @@ static bool bridge_connected = false;
 static char bridge_port[256] = "";
 static uint8_t board_type = 0;
 
-// DAC rate reduction for slow boards (Uno/Mega can't keep up with full rate)
-// Keep every Nth sample - matches stream_vgm.py behavior
-#define DAC_RATE_DIVISOR_AVR 4  // 1/4 rate for Arduino boards
-static uint8_t dac_counter = 0;
+// Write buffer for batching commands (reduces USB overhead)
+#define WRITE_BUFFER_SIZE 256
+static uint8_t write_buffer[WRITE_BUFFER_SIZE];
+static int write_buffer_pos = 0;
+
+// Delay buffer for Arduino boards only - syncs hardware FM with software DAC
+// Software audio has ~50ms latency from audio buffering, so we delay hardware too
+// Each slot holds one frame of data (~16.7ms NTSC)
+#define DELAY_FRAMES 4  // ~67ms total delay
+#define FRAME_BUFFER_SIZE 512
+static uint8_t frame_buffers[DELAY_FRAMES][FRAME_BUFFER_SIZE];
+static int frame_sizes[DELAY_FRAMES];
+static int current_frame = 0;
+static int frames_buffered = 0;
 
 // =============================================================================
 // Public API
@@ -461,11 +471,18 @@ void serial_bridge_init(uint32_t clock) {
     bridge_connected = false;
     bridge_port[0] = '\0';
     board_type = 0;
-    dac_counter = 0;
     if (clock > 0) {
         master_clock = clock;
     }
     last_cycle = 0;
+
+    // Reset delay buffer state
+    write_buffer_pos = 0;
+    current_frame = 0;
+    frames_buffered = 0;
+    for (int i = 0; i < DELAY_FRAMES; i++) {
+        frame_sizes[i] = 0;
+    }
 }
 
 void serial_bridge_shutdown(void) {
@@ -530,6 +547,13 @@ bool serial_bridge_connect(const char *port) {
         const char *name = (board_type < 6) ? board_names[board_type] : "Unknown";
 
         printf("Serial bridge: Connected to %s on %s\n", name, port);
+
+        // Warn about limited DAC support on AVR boards
+        if (board_type == 1 || board_type == 2) {
+            printf("  Note: PCM/DAC samples will play through software emulation.\n");
+            printf("  For full hardware audio, use Teensy 4.x or ESP32.\n");
+        }
+
         return true;
     }
 
@@ -610,29 +634,53 @@ uint8_t serial_bridge_get_board_type(void) {
 // Audio Write Functions - Called from YM2612/PSG emulation
 // =============================================================================
 
-// Write buffer for batching commands (reduces USB overhead)
-// Commands are now larger with delta prefix: YM=5 bytes, PSG=4 bytes
-#define WRITE_BUFFER_SIZE 128
-static uint8_t write_buffer[WRITE_BUFFER_SIZE];
-static int write_buffer_pos = 0;
-
 // Add data to write buffer, flush if full
 static void buffer_add(const uint8_t *data, int len) {
-    // If buffer would overflow, flush first
+    // Arduino boards use delay buffer
+    if (board_type == 1 || board_type == 2) {
+        int idx = current_frame % DELAY_FRAMES;
+        if (frame_sizes[idx] + len <= FRAME_BUFFER_SIZE) {
+            memcpy(frame_buffers[idx] + frame_sizes[idx], data, len);
+            frame_sizes[idx] += len;
+        }
+        return;
+    }
+
+    // Teensy/ESP32: send immediately (no delay needed)
     if (write_buffer_pos + len > WRITE_BUFFER_SIZE) {
         if (write_buffer_pos > 0) {
             serial_write_bytes(write_buffer, write_buffer_pos);
             write_buffer_pos = 0;
         }
     }
-
     memcpy(write_buffer + write_buffer_pos, data, len);
     write_buffer_pos += len;
 }
 
 // Public flush function - call once per frame from genesis.c
 void serial_bridge_flush(void) {
-    if (bridge_enabled && write_buffer_pos > 0) {
+    if (!bridge_enabled) return;
+
+    // Arduino boards: frame-delayed output to sync with software DAC
+    if (board_type == 1 || board_type == 2) {
+        frames_buffered++;
+
+        // After filling DELAY_FRAMES, start sending oldest frame each flush
+        if (frames_buffered > DELAY_FRAMES) {
+            int send_idx = (current_frame + 1) % DELAY_FRAMES;  // Oldest frame
+            if (frame_sizes[send_idx] > 0) {
+                serial_write_bytes(frame_buffers[send_idx], frame_sizes[send_idx]);
+                frame_sizes[send_idx] = 0;
+            }
+        }
+
+        // Move to next frame slot
+        current_frame = (current_frame + 1) % DELAY_FRAMES;
+        return;
+    }
+
+    // Teensy/ESP32: immediate flush
+    if (write_buffer_pos > 0) {
         serial_write_bytes(write_buffer, write_buffer_pos);
         write_buffer_pos = 0;
     }
@@ -641,15 +689,13 @@ void serial_bridge_flush(void) {
 void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value, uint32_t cycle) {
     if (!bridge_enabled || !serial_is_open()) return;
 
-    // DAC rate reduction for slow boards (Uno=1, Mega=2, Teensy=4 for testing)
+    // Completely skip DAC writes for Arduino Uno/Mega (board types 1 and 2)
+    // These boards can't keep up with DAC sample rate - let software emulator handle DAC audio
     // Register 0x2A on port 0 is the DAC data register
-    // TODO: Remove board_type == 4 after testing - Teensy doesn't need this
-    if (port == 0 && reg == 0x2A && (board_type == 1 || board_type == 2 || board_type == 4)) {
-        dac_counter++;
-        if (dac_counter < DAC_RATE_DIVISOR_AVR) {
-            return;  // Skip this DAC sample
-        }
-        dac_counter = 0;  // Reset counter, send this sample
+    if (port == 0 && reg == 0x2A && (board_type == 1 || board_type == 2)) {
+        // Still update timing to keep last_cycle synchronized, but don't output anything
+        last_cycle = cycle;
+        return;
     }
 
     // Insert wait commands for elapsed time (VGM-style)
@@ -690,7 +736,13 @@ void serial_bridge_reset(void) {
 
     // Reset timing for next stream
     last_cycle = 0;
-    dac_counter = 0;
+
+    // Reset delay buffer state for Arduino boards
+    current_frame = 0;
+    frames_buffered = 0;
+    for (int i = 0; i < DELAY_FRAMES; i++) {
+        frame_sizes[i] = 0;
+    }
 
     // Drain any pending response
     uint8_t buf[16];

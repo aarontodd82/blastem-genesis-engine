@@ -108,8 +108,11 @@ int mix_and_convert(unsigned char *byte_stream, int len, int *min_remaining_out)
 	int min_buffered = INT_MAX;
 	int min_remaining_buffer = INT_MAX;
 
-	// Skip software audio mixing when hardware audio is connected
-	if (serial_bridge_is_connected()) {
+	// Skip software audio mixing for boards that handle all audio in hardware
+	// Teensy (4) and ESP32 (5) handle FM + PSG + DAC in hardware - mute all software audio
+	// Arduino Uno (1) and Mega (2) handle FM + PSG only - software outputs DAC via dac_only flag
+	uint8_t board = serial_bridge_get_board_type();
+	if (board == 4 || board == 5) {  // Teensy or ESP32
 		// Still need to consume buffers to prevent backup
 		for (uint8_t i = 0; i < num_audio_sources; i++)
 		{
@@ -122,6 +125,7 @@ int mix_and_convert(unsigned char *byte_stream, int len, int *min_remaining_out)
 		}
 		return INT_MAX;
 	}
+	// Arduino boards (1, 2): continue to mix - YM2612 dac_only and PSG mute flags filter the output
 
 	for (uint8_t i = 0; i < num_audio_sources; i++)
 	{

@@ -1817,7 +1817,16 @@ genesis_context *alloc_init_genesis(rom_info *rom, void *main_rom, void *lock_on
 
 	gen->psg = malloc(sizeof(psg_context));
 	psg_init(gen->psg, gen->master_clock, MCLKS_PER_PSG);
-	
+
+	// Configure software audio output based on connected hardware
+	// Arduino Uno (1) / Mega (2): hardware handles FM+PSG, software outputs DAC only
+	// Teensy (4) / ESP32 (5): hardware handles everything, software muted in render_audio.c
+	uint8_t board = serial_bridge_get_board_type();
+	if (board == 1 || board == 2) {  // Arduino Uno or Mega
+		ym_set_dac_only(gen->ym, 1);   // Software outputs only DAC audio
+		psg_set_mute(gen->psg, 1);     // Mute PSG (hardware handles it)
+	}
+
 	set_audio_config(gen);
 
 	z80_map[0].buffer = gen->zram = calloc(1, Z80_RAM_BYTES);
