@@ -397,6 +397,15 @@ m68k.c : m68k.cpu cpu_dsl.py
 %.c : %.cpu cpu_dsl.py
 	./cpu_dsl.py -d goto $< > $@
 
+#Header files are generated as side-effects of .c generation
+z80.h : z80.c
+m68k.h : m68k.c
+
+#When using NEW_CORE, ensure generated headers exist before compiling
+ifdef NEW_CORE
+$(MAINOBJS) $(LIBOBJS) : z80.h m68k.h
+endif
+
 %.db.c : %.db
 	sed -e 's/"/\\"/g' -e 's/^\(.*\)$$/"\1\\n"/' -e'1s/^\(.*\)$$/const char $(shell echo $< | tr '.' '_')_data[] = \1/' -e '$$s/^\(.*\)$$/\1;/' $< > $@
 
