@@ -212,8 +212,18 @@ ifeq ($(CPU),BePC)
 CPU:=i686
 endif
 
+#Normalize ARM64 architecture names
+ifeq ($(CPU),aarch64)
+CPU:=arm64
+endif
+
 TRANSOBJS=gen.o backend.o $(MEM) arena.o tern.o
 M68KOBJS=68kinst.o
+
+#ARM64 requires the new core (no x86 JIT available)
+ifeq ($(CPU),arm64)
+NEW_CORE:=1
+endif
 
 ifdef NEW_CORE
 Z80OBJS=z80.o z80inst.o 
@@ -269,7 +279,11 @@ ifeq ($(CPU),i686)
 CFLAGS+=-DX86_32 -m32
 LDFLAGS+=-m32
 else
+ifeq ($(CPU),arm64)
+CFLAGS+=-DARM64
+else
 $(error $(CPU) is not a supported architecture)
+endif
 endif
 endif
 
