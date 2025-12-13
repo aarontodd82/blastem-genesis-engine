@@ -35,7 +35,7 @@ jobs:
           path: blastem-linux.tar.gz
 
   build-macos:
-    runs-on: macos-15
+    runs-on: macos-14-large
     steps:
       - uses: actions/checkout@v4
 
