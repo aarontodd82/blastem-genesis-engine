@@ -551,7 +551,13 @@ bool serial_bridge_connect(const char *port) {
         // Warn about limited DAC support on AVR boards
         if (board_type == 1 || board_type == 2) {
             printf("  Note: PCM/DAC samples will play through software emulation.\n");
-            printf("  For full hardware audio, use Teensy 4.x or ESP32.\n");
+            printf("  For full hardware audio, use Teensy 4.x.\n");
+        }
+
+        // Warn about reduced DAC rate on ESP32
+        if (board_type == 5) {
+            printf("  Note: DAC sample rate reduced to 1/4 for ESP32 timing stability.\n");
+            printf("  For full DAC quality, use Teensy 4.x.\n");
         }
 
         return true;
@@ -686,16 +692,31 @@ void serial_bridge_flush(void) {
     }
 }
 
+// DAC rate reduction counter for ESP32
+static uint8_t dac_counter = 0;
+
 void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value, uint32_t cycle) {
     if (!bridge_enabled || !serial_is_open()) return;
 
-    // Completely skip DAC writes for Arduino Uno/Mega (board types 1 and 2)
-    // These boards can't keep up with DAC sample rate - let software emulator handle DAC audio
-    // Register 0x2A on port 0 is the DAC data register
-    if (port == 0 && reg == 0x2A && (board_type == 1 || board_type == 2)) {
-        // Still update timing to keep last_cycle synchronized, but don't output anything
-        last_cycle = cycle;
-        return;
+    // DAC write handling (register 0x2A on port 0)
+    if (port == 0 && reg == 0x2A) {
+        // Completely skip DAC writes for Arduino Uno/Mega (board types 1 and 2)
+        // These boards can't keep up with DAC sample rate
+        if (board_type == 1 || board_type == 2) {
+            last_cycle = cycle;
+            return;
+        }
+
+        // ESP32 (board type 5): Quarter-rate DAC to reduce serial overhead
+        // Skip 3 out of 4 DAC writes, but still output timing
+        if (board_type == 5) {
+            dac_counter++;
+            if ((dac_counter & 0x03) != 0) {
+                // Still output wait commands to maintain timing, just skip the DAC write
+                add_wait(cycle);
+                return;
+            }
+        }
     }
 
     // Insert wait commands for elapsed time (VGM-style)
@@ -736,6 +757,7 @@ void serial_bridge_reset(void) {
 
     // Reset timing for next stream
     last_cycle = 0;
+    dac_counter = 0;
 
     // Reset delay buffer state for Arduino boards
     current_frame = 0;
