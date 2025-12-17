@@ -2883,7 +2883,7 @@ code_info z80_make_interp_stub(z80_context * context, uint16_t address)
 }
 
 
-uint8_t * z80_get_native_address(z80_context * context, uint32_t address)
+code_ptr z80_get_native_address(z80_context * context, uint32_t address)
 {
 	z80_options *opts = context->options;
 	native_map_slot * native_code_map = opts->gen.native_code_map;
@@ -2915,7 +2915,7 @@ uint8_t z80_get_native_inst_size(z80_options * opts, uint32_t address)
 	return opts->gen.ram_inst_sizes[slot][meta_off%1024];
 }
 
-void z80_map_native_address(z80_context * context, uint32_t address, uint8_t * native_address, uint8_t size, uint8_t native_size)
+void z80_map_native_address(z80_context * context, uint32_t address, code_ptr native_address, uint8_t size, uint8_t native_size)
 {
 	z80_options * opts = context->options;
 	uint32_t meta_off;
@@ -3050,9 +3050,9 @@ void z80_invalidate_code_range(z80_context *context, uint32_t start, uint32_t en
 	}
 }
 
-uint8_t * z80_get_native_address_trans(z80_context * context, uint32_t address)
+code_ptr z80_get_native_address_trans(z80_context * context, uint32_t address)
 {
-	uint8_t * addr = z80_get_native_address(context, address);
+	code_ptr addr = z80_get_native_address(context, address);
 	if (!addr) {
 		translate_z80_stream(context, address);
 		addr = z80_get_native_address(context, address);
@@ -3153,7 +3153,7 @@ void translate_z80_stream(z80_context * context, uint32_t address)
 		z80inst inst;
 		dprintf("translating Z80 code at address %X\n", address);
 		do {
-			uint8_t * existing = z80_get_native_address(context, address);
+			code_ptr existing = z80_get_native_address(context, address);
 			if (existing) {
 				jmp(&opts->gen.code, existing);
 				break;
@@ -3858,7 +3858,7 @@ void zinsert_breakpoint(z80_context * context, uint16_t address, uint8_t * bp_ha
 		if (!context->bp_stub) {
 			zcreate_stub(context);
 		}
-		uint8_t * native = z80_get_native_address(context, address);
+		code_ptr native = z80_get_native_address(context, address);
 		if (native) {
 			zbreakpoint_patch(context, address, native);
 		}
@@ -3868,7 +3868,7 @@ void zinsert_breakpoint(z80_context * context, uint16_t address, uint8_t * bp_ha
 void zremove_breakpoint(z80_context * context, uint16_t address)
 {
 	context->breakpoint_flags[address / 8] &= ~(1 << (address % 8));
-	uint8_t * native = z80_get_native_address(context, address);
+	code_ptr native = z80_get_native_address(context, address);
 	if (native) {
 		z80_options * opts = context->options;
 		code_info tmp_code = opts->gen.code;

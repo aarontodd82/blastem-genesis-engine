@@ -78,9 +78,9 @@ typedef struct {
 	uint8_t            align_error_mask;
 } cpu_options;
 
-typedef uint8_t * (*native_addr_func)(void * context, uint32_t address);
+typedef code_ptr (*native_addr_func)(void * context, uint32_t address);
 
-deferred_addr * defer_address(deferred_addr * old_head, uint32_t address, uint8_t *dest);
+deferred_addr * defer_address(deferred_addr * old_head, uint32_t address, code_ptr dest);
 void remove_deferred_until(deferred_addr **head_ptr, deferred_addr * remove_to);
 void process_deferred(deferred_addr ** head_ptr, void * context, native_addr_func get_native);
 
