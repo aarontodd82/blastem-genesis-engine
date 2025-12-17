@@ -67,7 +67,7 @@ enum {
 
 #pragma pack(pop)
 
-typedef struct {
+typedef struct data_block {
 	struct data_block *next;
 	uint8_t           *data;
 	uint32_t          size;
