@@ -360,7 +360,7 @@ void zdebugger_print(z80_context * context, char format_char, char * param)
 	case '0':
 		if (param[1] == 'x') {
 			uint16_t p_addr = strtol(param+2, NULL, 16);
-			value = read_byte(p_addr, (void **)context->mem_pointers, &context->opts->gen, context);
+			value = read_byte(p_addr, (void **)context->mem_pointers, &context->options->gen, context);
 		}
 		break;
 	}
