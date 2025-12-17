@@ -362,7 +362,231 @@ int serial_bridge_list_ports(char ports[][64], int max_ports) {
     return count;
 }
 
-#endif  // Platform-specific code
+#endif  // Platform-specific serial code
+
+// =============================================================================
+// TCP Socket Implementation (cross-platform)
+// =============================================================================
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+
+static SOCKET tcp_socket = INVALID_SOCKET;
+static bool winsock_initialized = false;
+
+static bool tcp_init(void) {
+    if (!winsock_initialized) {
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+            return false;
+        }
+        winsock_initialized = true;
+    }
+    return true;
+}
+
+static bool tcp_open(const char *host, int port) {
+    if (!tcp_init()) return false;
+
+    struct addrinfo hints = {0}, *result = NULL;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    if (getaddrinfo(host, port_str, &hints, &result) != 0) {
+        return false;
+    }
+
+    tcp_socket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (tcp_socket == INVALID_SOCKET) {
+        freeaddrinfo(result);
+        return false;
+    }
+
+    // Set connection timeout
+    DWORD timeout = 2000;  // 2 seconds
+    setsockopt(tcp_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    setsockopt(tcp_socket, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+
+    if (connect(tcp_socket, result->ai_addr, (int)result->ai_addrlen) == SOCKET_ERROR) {
+        closesocket(tcp_socket);
+        tcp_socket = INVALID_SOCKET;
+        freeaddrinfo(result);
+        return false;
+    }
+
+    freeaddrinfo(result);
+
+    // Disable Nagle's algorithm for low-latency
+    int flag = 1;
+    setsockopt(tcp_socket, IPPROTO_TCP, TCP_NODELAY, (const char*)&flag, sizeof(flag));
+
+    return true;
+}
+
+static void tcp_close(void) {
+    if (tcp_socket != INVALID_SOCKET) {
+        closesocket(tcp_socket);
+        tcp_socket = INVALID_SOCKET;
+    }
+}
+
+static bool tcp_is_open(void) {
+    return tcp_socket != INVALID_SOCKET;
+}
+
+static int tcp_write_bytes(const uint8_t *data, int len) {
+    if (tcp_socket == INVALID_SOCKET) return -1;
+    return send(tcp_socket, (const char*)data, len, 0);
+}
+
+static int tcp_read_bytes(uint8_t *data, int len) {
+    if (tcp_socket == INVALID_SOCKET) return -1;
+    return recv(tcp_socket, (char*)data, len, 0);
+}
+
+static void tcp_set_nonblocking(void) {
+    if (tcp_socket == INVALID_SOCKET) return;
+    u_long mode = 1;
+    ioctlsocket(tcp_socket, FIONBIO, &mode);
+}
+
+#else  // Linux / macOS
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <errno.h>
+
+static int tcp_socket_fd = -1;
+
+static bool tcp_init(void) {
+    return true;  // No init needed on Unix
+}
+
+static bool tcp_open(const char *host, int port) {
+    struct addrinfo hints = {0}, *result = NULL;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    if (getaddrinfo(host, port_str, &hints, &result) != 0) {
+        return false;
+    }
+
+    tcp_socket_fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (tcp_socket_fd < 0) {
+        freeaddrinfo(result);
+        return false;
+    }
+
+    // Set connection timeout
+    struct timeval timeout;
+    timeout.tv_sec = 2;
+    timeout.tv_usec = 0;
+    setsockopt(tcp_socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(tcp_socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+    if (connect(tcp_socket_fd, result->ai_addr, result->ai_addrlen) < 0) {
+        close(tcp_socket_fd);
+        tcp_socket_fd = -1;
+        freeaddrinfo(result);
+        return false;
+    }
+
+    freeaddrinfo(result);
+
+    // Disable Nagle's algorithm for low-latency
+    int flag = 1;
+    setsockopt(tcp_socket_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+    return true;
+}
+
+static void tcp_close(void) {
+    if (tcp_socket_fd >= 0) {
+        close(tcp_socket_fd);
+        tcp_socket_fd = -1;
+    }
+}
+
+static bool tcp_is_open(void) {
+    return tcp_socket_fd >= 0;
+}
+
+static int tcp_write_bytes(const uint8_t *data, int len) {
+    if (tcp_socket_fd < 0) return -1;
+    return write(tcp_socket_fd, data, len);
+}
+
+static int tcp_read_bytes(uint8_t *data, int len) {
+    if (tcp_socket_fd < 0) return -1;
+    return read(tcp_socket_fd, data, len);
+}
+
+static void tcp_set_nonblocking(void) {
+    if (tcp_socket_fd < 0) return;
+    int flags = fcntl(tcp_socket_fd, F_GETFL, 0);
+    fcntl(tcp_socket_fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+#endif  // TCP platform-specific code
+
+// =============================================================================
+// Unified I/O Layer (abstracts serial vs TCP)
+// =============================================================================
+
+static bridge_connection_type connection_type = BRIDGE_CONN_NONE;
+
+static bool bridge_io_is_open(void) {
+    switch (connection_type) {
+        case BRIDGE_CONN_TCP:    return tcp_is_open();
+        case BRIDGE_CONN_SERIAL: return serial_is_open();
+        default:                 return false;
+    }
+}
+
+static int bridge_io_write(const uint8_t *data, int len) {
+    switch (connection_type) {
+        case BRIDGE_CONN_TCP:    return tcp_write_bytes(data, len);
+        case BRIDGE_CONN_SERIAL: return serial_write_bytes(data, len);
+        default:                 return -1;
+    }
+}
+
+static int bridge_io_read(uint8_t *data, int len) {
+    switch (connection_type) {
+        case BRIDGE_CONN_TCP:    return tcp_read_bytes(data, len);
+        case BRIDGE_CONN_SERIAL: return serial_read_bytes(data, len);
+        default:                 return -1;
+    }
+}
+
+static void bridge_io_set_nonblocking(void) {
+    switch (connection_type) {
+        case BRIDGE_CONN_TCP:    tcp_set_nonblocking(); break;
+        case BRIDGE_CONN_SERIAL: serial_set_nonblocking(); break;
+        default: break;
+    }
+}
+
+static void bridge_io_close(void) {
+    switch (connection_type) {
+        case BRIDGE_CONN_TCP:    tcp_close(); break;
+        case BRIDGE_CONN_SERIAL: serial_close(); break;
+        default: break;
+    }
+    connection_type = BRIDGE_CONN_NONE;
+}
 
 // =============================================================================
 // VGM-Style Timing (exact same approach as vgm.c)
@@ -502,12 +726,13 @@ bool serial_bridge_connect(const char *port) {
         return false;
     }
 
+    connection_type = BRIDGE_CONN_SERIAL;
     strncpy(bridge_port, port, sizeof(bridge_port) - 1);
     bridge_port[sizeof(bridge_port) - 1] = '\0';
 
     // Send PING and wait for ACK + board type + READY
     uint8_t ping = CMD_PING;
-    serial_write_bytes(&ping, 1);
+    bridge_io_write(&ping, 1);
 
     uint8_t response[3] = {0};
     int total_read = 0;
@@ -515,7 +740,7 @@ bool serial_bridge_connect(const char *port) {
 
     // Try to read 3 bytes with retries
     while (total_read < 3 && attempts < 10) {
-        int n = serial_read_bytes(response + total_read, 3 - total_read);
+        int n = bridge_io_read(response + total_read, 3 - total_read);
         if (n > 0) {
             total_read += n;
         }
@@ -534,7 +759,7 @@ bool serial_bridge_connect(const char *port) {
         last_cycle = 0;
 
         // Switch to non-blocking mode for real-time streaming
-        serial_set_nonblocking();
+        bridge_io_set_nonblocking();
 
         const char *board_names[] = {
             "Unknown",
@@ -542,53 +767,136 @@ bool serial_bridge_connect(const char *port) {
             "Arduino Mega",
             "Other",
             "Teensy 4.x",
-            "ESP32"
+            "ESP32",
+            "Raspberry Pi"
         };
-        const char *name = (board_type < 6) ? board_names[board_type] : "Unknown";
+        const char *name = (board_type < 7) ? board_names[board_type] : "Unknown";
 
         printf("Serial bridge: Connected to %s on %s\n", name, port);
 
         // Warn about limited DAC support on AVR boards
         if (board_type == 1 || board_type == 2) {
             printf("  Note: PCM/DAC samples will play through software emulation.\n");
-            printf("  For full hardware audio, use Teensy 4.x.\n");
+            printf("  For full hardware audio, use Teensy 4.x or Raspberry Pi.\n");
         }
 
         // Warn about reduced DAC rate on ESP32
         if (board_type == 5) {
             printf("  Note: DAC sample rate reduced to 1/4 for ESP32 timing stability.\n");
-            printf("  For full DAC quality, use Teensy 4.x.\n");
+            printf("  For full DAC quality, use Teensy 4.x or Raspberry Pi.\n");
         }
 
         return true;
     }
 
     printf("Serial bridge: No response from device (got %d bytes)\n", total_read);
-    serial_close();
+    bridge_io_close();
+    bridge_port[0] = '\0';
+    return false;
+}
+
+bool serial_bridge_connect_tcp(const char *host, int port) {
+    // Disconnect if already connected
+    if (bridge_connected) {
+        serial_bridge_disconnect();
+    }
+
+    printf("Network bridge: Connecting to %s:%d...\n", host, port);
+
+    if (!tcp_open(host, port)) {
+        return false;
+    }
+
+    connection_type = BRIDGE_CONN_TCP;
+    snprintf(bridge_port, sizeof(bridge_port), "%s:%d", host, port);
+
+    // Send PING and wait for ACK + board type + READY
+    uint8_t ping = CMD_PING;
+    bridge_io_write(&ping, 1);
+
+    uint8_t response[3] = {0};
+    int total_read = 0;
+    int attempts = 0;
+
+    // Try to read 3 bytes with retries
+    while (total_read < 3 && attempts < 10) {
+        int n = bridge_io_read(response + total_read, 3 - total_read);
+        if (n > 0) {
+            total_read += n;
+        }
+        attempts++;
+    }
+
+    if (total_read >= 3 &&
+        response[0] == CMD_ACK &&
+        response[2] == FLOW_READY) {
+
+        board_type = response[1];
+        bridge_connected = true;
+        bridge_enabled = true;
+
+        // Initialize timing for VGM-style wait commands
+        last_cycle = 0;
+
+        // Switch to non-blocking mode for real-time streaming
+        bridge_io_set_nonblocking();
+
+        const char *board_names[] = {
+            "Unknown",
+            "Arduino Uno",
+            "Arduino Mega",
+            "Other",
+            "Teensy 4.x",
+            "ESP32",
+            "Raspberry Pi"
+        };
+        const char *name = (board_type < 7) ? board_names[board_type] : "Unknown";
+
+        printf("Network bridge: Connected to %s at %s:%d\n", name, host, port);
+        return true;
+    }
+
+    printf("Network bridge: No response from device (got %d bytes)\n", total_read);
+    bridge_io_close();
     bridge_port[0] = '\0';
     return false;
 }
 
 bool serial_bridge_auto_connect(void) {
-    char ports[16][64];
-    int count = serial_bridge_list_ports(ports, 16);
+    // Try network connections first (most common for Pi setups)
+    printf("Hardware bridge: Scanning for GenesisEngine...\n");
 
-    if (count == 0) {
-        printf("Serial bridge: No serial ports found\n");
-        return false;
-    }
+    // Try common hostnames via mDNS (.local)
+    const char *network_hosts[] = {
+        "raspberrypi.local",
+        "genesis-engine.local",
+        NULL
+    };
 
-    printf("Serial bridge: Scanning %d port(s)...\n", count);
-
-    for (int i = 0; i < count; i++) {
-        printf("  Trying %s...\n", ports[i]);
-
-        if (serial_bridge_connect(ports[i])) {
+    for (int i = 0; network_hosts[i] != NULL; i++) {
+        printf("  Trying %s:%d...\n", network_hosts[i], BRIDGE_DEFAULT_PORT);
+        if (serial_bridge_connect_tcp(network_hosts[i], BRIDGE_DEFAULT_PORT)) {
             return true;
         }
     }
 
-    printf("Serial bridge: No Genesis Engine board found\n");
+    // Fall back to serial port scanning
+    char ports[16][64];
+    int count = serial_bridge_list_ports(ports, 16);
+
+    if (count > 0) {
+        printf("  Scanning %d serial port(s)...\n", count);
+
+        for (int i = 0; i < count; i++) {
+            printf("  Trying %s...\n", ports[i]);
+
+            if (serial_bridge_connect(ports[i])) {
+                return true;
+            }
+        }
+    }
+
+    printf("Hardware bridge: No GenesisEngine board found\n");
     return false;
 }
 
@@ -599,12 +907,12 @@ void serial_bridge_disconnect(void) {
 
         // Send end-of-stream (VGM format: just the command byte)
         uint8_t cmd = CMD_END_STREAM;
-        serial_write_bytes(&cmd, 1);
+        bridge_io_write(&cmd, 1);
 
-        serial_close();
+        bridge_io_close();
         bridge_connected = false;
         bridge_enabled = false;
-        printf("Serial bridge: Disconnected\n");
+        printf("Hardware bridge: Disconnected\n");
     }
 }
 
@@ -636,6 +944,10 @@ uint8_t serial_bridge_get_board_type(void) {
     return board_type;
 }
 
+bridge_connection_type serial_bridge_get_connection_type(void) {
+    return connection_type;
+}
+
 // =============================================================================
 // Audio Write Functions - Called from YM2612/PSG emulation
 // =============================================================================
@@ -652,10 +964,10 @@ static void buffer_add(const uint8_t *data, int len) {
         return;
     }
 
-    // Teensy/ESP32: send immediately (no delay needed)
+    // Teensy/ESP32/Pi: send immediately (no delay needed)
     if (write_buffer_pos + len > WRITE_BUFFER_SIZE) {
         if (write_buffer_pos > 0) {
-            serial_write_bytes(write_buffer, write_buffer_pos);
+            bridge_io_write(write_buffer, write_buffer_pos);
             write_buffer_pos = 0;
         }
     }
@@ -675,7 +987,7 @@ void serial_bridge_flush(void) {
         if (frames_buffered > DELAY_FRAMES) {
             int send_idx = (current_frame + 1) % DELAY_FRAMES;  // Oldest frame
             if (frame_sizes[send_idx] > 0) {
-                serial_write_bytes(frame_buffers[send_idx], frame_sizes[send_idx]);
+                bridge_io_write(frame_buffers[send_idx], frame_sizes[send_idx]);
                 frame_sizes[send_idx] = 0;
             }
         }
@@ -685,9 +997,9 @@ void serial_bridge_flush(void) {
         return;
     }
 
-    // Teensy/ESP32: immediate flush
+    // Teensy/ESP32/Pi: immediate flush
     if (write_buffer_pos > 0) {
-        serial_write_bytes(write_buffer, write_buffer_pos);
+        bridge_io_write(write_buffer, write_buffer_pos);
         write_buffer_pos = 0;
     }
 }
@@ -696,7 +1008,7 @@ void serial_bridge_flush(void) {
 static uint8_t dac_counter = 0;
 
 void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value, uint32_t cycle) {
-    if (!bridge_enabled || !serial_is_open()) return;
+    if (!bridge_enabled || !bridge_io_is_open()) return;
 
     // DAC write handling (register 0x2A on port 0)
     if (port == 0 && reg == 0x2A) {
@@ -732,7 +1044,7 @@ void serial_bridge_ym2612_write(uint8_t port, uint8_t reg, uint8_t value, uint32
 }
 
 void serial_bridge_psg_write(uint8_t value, uint32_t cycle) {
-    if (!bridge_enabled || !serial_is_open()) return;
+    if (!bridge_enabled || !bridge_io_is_open()) return;
 
     // Insert wait commands for elapsed time (VGM-style)
     add_wait(cycle);
@@ -746,14 +1058,14 @@ void serial_bridge_psg_write(uint8_t value, uint32_t cycle) {
 }
 
 void serial_bridge_reset(void) {
-    if (!serial_is_open()) return;
+    if (!bridge_io_is_open()) return;
 
     // Flush any pending writes first
     serial_bridge_flush();
 
     // Send END_STREAM (VGM format: just the command byte 0x66)
     uint8_t cmd = CMD_END_STREAM;
-    serial_write_bytes(&cmd, 1);
+    bridge_io_write(&cmd, 1);
 
     // Reset timing for next stream
     last_cycle = 0;
@@ -768,11 +1080,11 @@ void serial_bridge_reset(void) {
 
     // Drain any pending response
     uint8_t buf[16];
-    serial_read_bytes(buf, sizeof(buf));
+    bridge_io_read(buf, sizeof(buf));
 }
 
 void serial_bridge_silence(void) {
-    if (!bridge_enabled || !serial_is_open()) return;
+    if (!bridge_enabled || !bridge_io_is_open()) return;
 
     // Flush any pending writes first
     serial_bridge_flush();
@@ -803,7 +1115,7 @@ void serial_bridge_silence(void) {
         CMD_PSG_WRITE, 0xFF,           // Channel 3 (noise) volume off
         CMD_WAIT_SHORT,
     };
-    serial_write_bytes(silence_cmds, sizeof(silence_cmds));
+    bridge_io_write(silence_cmds, sizeof(silence_cmds));
 }
 
 void serial_bridge_adjust_cycles(uint32_t deduction) {

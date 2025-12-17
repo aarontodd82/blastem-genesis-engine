@@ -1,9 +1,11 @@
 /**
  * serial_bridge.h - Real-time audio streaming to Genesis Engine hardware
  *
- * This module streams YM2612 and PSG register writes over serial to real
- * Genesis audio hardware. The emulator handles all timing - we just send
- * register writes as they occur.
+ * This module streams YM2612 and PSG register writes to real Genesis audio
+ * hardware. Supports both TCP (network) and serial (USB) connections.
+ *
+ * Auto-discovery: Automatically finds GenesisEngine on the network via
+ * mDNS/hostname, or scans serial ports for connected hardware.
  */
 
 #ifndef SERIAL_BRIDGE_H
@@ -12,6 +14,16 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// Connection types
+typedef enum {
+    BRIDGE_CONN_NONE = 0,
+    BRIDGE_CONN_TCP,
+    BRIDGE_CONN_SERIAL
+} bridge_connection_type;
+
+// Default TCP port for network connections
+#define BRIDGE_DEFAULT_PORT 7654
+
 // Initialize the serial bridge subsystem
 // master_clock is the Genesis master clock frequency (e.g., 53693175 for NTSC)
 void serial_bridge_init(uint32_t master_clock);
@@ -19,10 +31,14 @@ void serial_bridge_init(uint32_t master_clock);
 // Shutdown and cleanup
 void serial_bridge_shutdown(void);
 
-// Connect to a specific port (e.g., "COM3" or "/dev/ttyUSB0")
+// Connect to a specific serial port (e.g., "COM3" or "/dev/ttyUSB0")
 bool serial_bridge_connect(const char *port);
 
+// Connect to a network host (e.g., "192.168.1.100" or "raspberrypi.local")
+bool serial_bridge_connect_tcp(const char *host, int port);
+
 // Auto-detect and connect to Genesis Engine board
+// Tries: 1) Network (mDNS/hostname), 2) Serial ports
 bool serial_bridge_auto_connect(void);
 
 // Disconnect from hardware
@@ -36,6 +52,7 @@ bool serial_bridge_is_connected(void);
 bool serial_bridge_is_enabled(void);
 const char* serial_bridge_get_port(void);
 uint8_t serial_bridge_get_board_type(void);
+bridge_connection_type serial_bridge_get_connection_type(void);
 
 // Get list of available serial ports
 // Returns number of ports found, fills ports array with port names
